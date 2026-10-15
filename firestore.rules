@@ -1,0 +1,51 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function role(b) {
+      return get(/databases/$(database)/documents/businesses/$(b)/members/$(request.auth.uid)).data.role;
+    }
+    function mem(b) { return request.auth != null && role(b) in ['owner', 'manager', 'staff']; }
+    function mgr(b) { return request.auth != null && role(b) in ['owner', 'manager']; }
+    function sRead(c)   { return c in ['products', 'sales', 'customers', 'payments', 'appointments', 'tables', 'repairs', 'orders', 'quotes']; }
+    function sCreate(c) { return c in ['sales', 'customers', 'payments', 'appointments', 'tables', 'repairs', 'orders', 'quotes', 'logs']; }
+    function sUpdate(c) { return c in ['customers', 'appointments', 'tables', 'repairs', 'orders']; }
+
+    // email -> uid lookup (sirf verified email wala apni entry likh sakta hai)
+    match /userByEmail/{e} {
+      allow get: if request.auth != null;
+      allow create, update: if request.auth != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.email.lower() == e
+        && request.resource.data.uid == request.auth.uid
+        && (resource == null || resource.data.uid == request.auth.uid);
+      allow delete: if request.auth != null && resource.data.uid == request.auth.uid;
+    }
+
+    match /businesses/{b} {
+      allow create: if request.auth != null
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.memberIds == [request.auth.uid];
+      allow read: if request.auth != null && request.auth.uid in resource.data.memberIds;
+      allow update: if request.auth != null && role(b) == 'owner';
+      allow delete: if request.auth != null && resource.data.ownerId == request.auth.uid;
+
+      match /members/{m} {
+        allow read: if mem(b);
+        allow create: if request.auth != null && (
+          (m == request.auth.uid &&
+            getAfter(/databases/$(database)/documents/businesses/$(b)).data.ownerId == request.auth.uid)
+          || role(b) == 'owner');
+        allow update, delete: if request.auth != null && role(b) == 'owner';
+      }
+
+      match /{c}/{d} {
+        allow read:   if c != 'members' && mem(b) && (mgr(b) || sRead(c));
+        allow create: if c != 'members' && mem(b) && (mgr(b) || sCreate(c));
+        allow update: if c != 'members' && mem(b) && (mgr(b) || sUpdate(c) ||
+          (c == 'products' && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['stock'])));
+        allow delete: if c != 'members' && mgr(b);
+      }
+    }
+  }
+}
